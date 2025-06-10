@@ -1,0 +1,84 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: infrastructure
+  namespace: flux-system
+spec:
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: cluster-vars
+  healthChecks:
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: cert-manager
+      namespace: kube-system
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: operator
+      namespace: network-tools
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: loki-distributor
+      namespace: monitoring
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: loki-gateway
+      namespace: monitoring
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: loki-querier
+      namespace: monitoring
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: loki-query-frontend
+      namespace: monitoring
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: loki-query-scheduler
+      namespace: monitoring
+    - apiVersion: apps/v1
+      kind: StatefulSet
+      name: loki-chunks-cache
+      namespace: monitoring
+    - apiVersion: apps/v1
+      kind: StatefulSet
+      name: loki-compactor
+      namespace: monitoring
+    - apiVersion: apps/v1
+      kind: StatefulSet
+      name: loki-index-gateway
+      namespace: monitoring
+    - apiVersion: apps/v1
+      kind: StatefulSet
+      name: loki-ingester
+      namespace: monitoring
+    - apiVersion: apps/v1
+      kind: StatefulSet
+      name: loki-minio
+      namespace: monitoring
+    - apiVersion: apps/v1
+      kind: StatefulSet
+      name: loki-results-cache
+      namespace: monitoring
+    - apiVersion: apps/v1
+      kind: StatefulSet
+      name: loki-chunks-cache
+      namespace: monitoring
+    - apiVersion: apps/v1
+      kind: StatefulSet
+      name: loki-ruler
+      namespace: monitoring
+    - apiVersion: apps/v1
+      kind: DaemonSet
+      name: alloy
+      namespace: monitoring
+  interval: 10m0s
+  path: ./2-infrastructure
+  prune: true
+  dependsOn:
+    - name: network-policies
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  timeout: 5m0s

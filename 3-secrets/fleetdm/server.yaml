@@ -1,0 +1,11 @@
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: server
+  namespace: fleetdm
+stringData:
+  license: ""
+  android_service_credentials: |
+    {}
+  private_key: "p7hrU4wKN1X1F8Q5U5o+9yEUoUK6e52JMz7/sucjjBo="

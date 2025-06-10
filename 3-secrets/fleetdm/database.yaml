@@ -1,0 +1,10 @@
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  creationTimestamp: null
+  name: database
+  namespace: fleetdm
+stringData:
+  mysql-password: "password"
+  mysql-root-password: "password"

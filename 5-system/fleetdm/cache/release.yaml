@@ -1,0 +1,15 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: redis
+  namespace: fleetdm
+spec:
+  releaseName: redis
+  values:
+    usePassword: false
+    cluster:
+      nodes: 6
+  chartRef:
+    kind: OCIRepository
+    name: redis
+  interval: 1m10s

@@ -1,0 +1,8 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - fleet.yaml
+  - webhook.yaml
+  - minio.yaml
+  - grafana.yaml
+  - uptime-kuma.yaml

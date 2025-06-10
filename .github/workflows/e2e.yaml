@@ -1,0 +1,395 @@
+name: E2E Internal Tools Infrastructure
+
+on:
+  pull_request:
+  merge_group:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'How long to keep the action online'
+        required: false
+        type: string
+      keep:
+        description: 'Should keep the cluster running'
+        type: keep
+        required: true
+
+env:
+  CONFIGMAP_NAME: "cluster-vars"
+  NAMESPACE: "flux-system"
+  TAILNET_NAME: "taile07e4.ts.net"
+
+jobs:
+  kubernetes:
+    name: Kubernetes E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Tailscale
+        uses: tailscale/github-action@v3
+        if: inputs.keep
+        with:
+          oauth-client-id: ${{ secrets.CI_TAILSCALE_CLIENT_ID }}
+          oauth-secret: ${{ secrets.CI_TAILSCALE_CLIENT_SECRET }}
+          tags: tag:ci
+
+      - name: Validate required secrets
+        run: |
+          set -euo pipefail
+          echo "Validating required secrets..."
+          MISSING_SECRETS=()
+          
+          if [ -z "${{ secrets.TAILSCALE_API_KEY }}" ]; then
+            MISSING_SECRETS+=("TAILSCALE_API_KEY")
+          fi
+          
+          if [ -z "${{ secrets.TAILSCALE_CLIENT_ID }}" ]; then
+            MISSING_SECRETS+=("TAILSCALE_CLIENT_ID")
+          fi
+          
+          if [ -z "${{ secrets.TAILSCALE_CLIENT_SECRET }}" ]; then
+            MISSING_SECRETS+=("TAILSCALE_CLIENT_SECRET")
+          fi
+          
+          if [ ${#MISSING_SECRETS[@]} -ne 0 ]; then
+            echo "❌ ERROR: The following required secrets are not set:"
+            printf '  - %s\n' "${MISSING_SECRETS[@]}"
+            echo ""
+            echo "Please add these secrets to your GitHub repository settings:"
+            echo "Repository → Settings → Secrets and variables → Actions → Repository secrets"
+            echo ""
+            echo "Required secrets:"
+            echo "  - TAILSCALE_API_KEY: Your Tailscale API key"
+            echo "  - TAILSCALE_CLIENT_ID: Operator OAuth client ID"
+            echo "  - TAILSCALE_CLIENT_SECRET: Operator OAuth client secret"
+            exit 1
+          fi
+          
+          echo "✅ All required secrets are properly configured"
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Generate random string for Tailscale
+        run: |
+          RANDOM_STRING=$(openssl rand -hex 3)
+          echo "RANDOM_STRING=$RANDOM_STRING" >> $GITHUB_ENV
+          echo "Generated random string: $RANDOM_STRING"
+
+      - name: Get IP
+        id: ip
+        if: inputs.keep
+        run: |
+          ip=$(tailscale ip -4)
+          echo "ip=${ip}" >> "$GITHUB_OUTPUT"
+
+      - name: Patch Config
+        if: inputs.keep
+        run: |
+          sed -i "s/apiServerAddress: \"127.0.0.1\"/apiServerAddress: \"${{ steps.ip.outputs.ip }}\"/" kind-config.yaml
+          cat kind-config.yaml
+
+      - name: Setup Kind
+        uses: helm/kind-action@v1.10.0
+        with:
+          cluster_name: flux-e2e
+          config: kind-config.yaml
+          wait: 30s
+
+      - name: Debug Config
+        if: inputs.keep
+        run: |
+          wget https://github.com/Luzifer/ots/releases/download/v1.17.1/ots-cli_linux_amd64.tgz
+          tar -xvf ots-cli_linux_amd64.tgz
+          cat ~/.kube/config | ./ots-cli create
+
+      - name: Setup kubectl
+        run: |
+          echo "Setting kubectl context to kind-flux-e2e..."
+          kubectl config use-context kind-flux-e2e
+          kubectl cluster-info
+
+      - name: Install Helm and Cillium
+        run: |
+          echo "Setting up Helm..."
+          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          
+          echo "Installing Cillium"
+          APISERVER_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' flux-e2e-control-plane)
+          echo "API Server IP: $APISERVER_IP"
+          
+          helm repo add cilium https://helm.cilium.io/
+          docker pull quay.io/cilium/cilium:v1.17.4
+          kind load docker-image quay.io/cilium/cilium:v1.17.4 --name flux-e2e
+          helm install cilium cilium/cilium --version 1.17.4 \
+               --namespace kube-system \
+               --set operator.replicas=1 \
+               --set operator.prometheus.enabled=true \
+               --set devices="{eth+,enp+}" \
+               --set ipam.operator.clusterPoolIPv4PodCIDRList=10.244.0.0/16 \
+               --set l7Proxy=false \
+               --set k8sServiceHost=$APISERVER_IP \
+               --set k8sServicePort=6443 \
+               --set ipv4NativeRoutingCIDR=10.244.0.0/16 \
+               --set egressGateway.enabled=true \
+               --set bpf.masquerade=true \
+               --set prometheus.enabled=true \
+               --set hubble.enabled=true \
+               --set hubble.relay.enabled=true \
+               --set hubble.ui.enabled=true \
+               --set hubble.metrics.enabled="{dns,http,drop,tcp,flow,icmp}" \
+               --set nodePort.enabled=true
+
+      - name: Install Flux CLI
+        run: |
+          curl -s https://fluxcd.io/install.sh | sudo bash
+          flux --version
+
+      - name: Create Kubernetes namespaces
+        run: |
+          echo "Creating namespaces..."
+          kubectl create namespace flux-system --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create namespace fleetdm --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create namespace network-tools --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Create OAuth secret
+        run: |
+          echo "Creating OAuth secret..."
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: operator-oauth
+            namespace: network-tools
+          type: Opaque
+          stringData:
+            client_id: "${{ secrets.TAILSCALE_CLIENT_ID }}"
+            client_secret: "${{ secrets.TAILSCALE_CLIENT_SECRET }}"
+          EOF
+
+      - name: Install and configure Flux
+        run: |
+          echo "Installing Flux..."
+          flux install
+
+      - name: Apply e2e configurations
+        run: |
+          echo "Applying e2e configurations..."
+          kubectl apply -f e2e/config.yaml
+          kubectl apply -f e2e/secrets.yaml
+          kubectl apply -f e2e/cluster-vars.yaml
+
+      - name: Patch ConfigMap with random string
+        run: |
+          # Patch the ConfigMap with tailscalePrefix
+          kubectl patch configmap "$CONFIGMAP_NAME" -n "$NAMESPACE" \
+            --type merge \
+            -p "{\"data\":{\"tailscalePrefix\":\"$RANDOM_STRING-\"}}"
+          
+          # Patch the ConfigMap with tailscaleHostname
+          kubectl patch configmap "$CONFIGMAP_NAME" -n "$NAMESPACE" \
+            --type merge \
+            -p "{\"data\":{\"tailscaleHostname\":\"$RANDOM_STRING-operator\"}}"
+          
+          echo "Successfully patched ConfigMap '$CONFIGMAP_NAME' in namespace '$NAMESPACE'"
+          echo "Added tailscalePrefix: $RANDOM_STRING-"
+          echo "Added tailscaleHostname: $RANDOM_STRING-operator"
+          
+          # Verify the changes
+          echo "Verifying the patch:"
+          kubectl get configmap "$CONFIGMAP_NAME" -n "$NAMESPACE" -o jsonpath="{.data.tailscalePrefix}"
+          echo ""
+          kubectl get configmap "$CONFIGMAP_NAME" -n "$NAMESPACE" -o jsonpath="{.data.tailscaleHostname}"
+          echo ""
+
+      - name: Create Flux source
+        run: |
+          echo "Creating Flux source..."
+          echo "Using repository: ${{ github.event.repository.html_url }}"
+          echo "Using branch: ${{ github.ref_name }}"
+          
+          flux create source git flux-system \
+            --url="${{ github.event.repository.html_url }}" \
+            --branch="${{github.event.pull_request.head.ref}}" \
+            --username=${GITHUB_ACTOR} \
+            --password=${{ secrets.GITHUB_TOKEN }} \
+            --ignore-paths="cluster/flux-system/" \
+            --ignore-paths="cluster/config.yaml" \
+            --ignore-paths="cluster/secrets.yaml" \
+            --ignore-paths="cluster/cluster-vars.yaml"
+
+      - name: Create Flux kustomization
+        run: |
+          echo "Creating Flux kustomization..."
+          flux create kustomization flux-system \
+            --source=flux-system \
+            --path=./cluster
+
+      - name: Wait for kustomizations to be ready
+        run: |
+          echo "Waiting for kustomizations to be ready..."
+          kubectl -n flux-system wait kustomization/bootstrap --for=condition=ready --timeout=5m
+          kubectl -n flux-system wait kustomization/network-policies --for=condition=ready --timeout=5m
+          kubectl -n flux-system wait kustomization/infrastructure --for=condition=ready --timeout=5m
+          kubectl -n flux-system wait kustomization/secrets --for=condition=ready --timeout=5m
+          kubectl -n flux-system wait kustomization/config --for=condition=ready --timeout=5m
+          kubectl -n flux-system wait kustomization/system --for=condition=ready --timeout=5m
+          kubectl -n flux-system wait kustomization/apps --for=condition=ready --timeout=5m
+          kubectl -n flux-system wait kustomization/ingress --for=condition=ready --timeout=5m
+
+      - name: Display ingresses and verify addresses
+        run: |
+          echo "=== Deployment completed successfully! ==="
+          echo ""
+          echo "Kubernetes Ingresses Table"
+          echo "=========================="
+          echo ""
+          
+          # Show current ingresses table - fix the custom-columns format
+          kubectl get ingress --all-namespaces -o custom-columns="NAMESPACE:.metadata.namespace,NAME:.metadata.name,CLASS:.spec.ingressClassName,ADDRESS:.status.loadBalancer.ingress[0].hostname,AGE:.metadata.creationTimestamp"
+          
+          echo ""
+          echo "Checking for ingresses without addresses..."
+          echo "==========================================="
+          
+          # Retry loop for checking ingress addresses
+          max_retries=5
+          retry_interval=30
+          retry_count=0
+          
+          while [ $retry_count -lt $max_retries ]; do
+            retry_count=$((retry_count + 1))
+            echo "Attempt $retry_count of $max_retries..."
+          
+            # Check for ingresses without addresses
+            missing_addresses=$(kubectl get ingress --all-namespaces -o json | jq -r '
+              .items[] |
+              select(
+                (.status.loadBalancer.ingress | length) == 0 or
+                (.status.loadBalancer.ingress[0].hostname // .status.loadBalancer.ingress[0].ip // "") == ""
+              ) |
+              .metadata.namespace + "/" + .metadata.name
+            ')
+          
+            if [ -z "$missing_addresses" ]; then
+              echo "✅ All ingresses have addresses assigned!"
+              break
+            else
+              echo "⚠️ Found ingresses without addresses:"
+              echo "$missing_addresses" | while read -r ingress; do
+                echo "  - $ingress"
+              done
+          
+              if [ $retry_count -lt $max_retries ]; then
+                echo "⏳ Waiting ${retry_interval} seconds before retry..."
+                sleep $retry_interval
+                echo ""
+                echo "Refreshing ingresses table..."
+                # Fix the refresh command too
+                kubectl get ingress --all-namespaces -o custom-columns="NAMESPACE:.metadata.namespace,NAME:.metadata.name,CLASS:.spec.ingressClassName,ADDRESS:.status.loadBalancer.ingress[0].hostname,AGE:.metadata.creationTimestamp"
+                echo ""
+              fi
+            fi
+          done
+          
+          # If we get here and still have missing addresses, show error
+          if [ -n "$missing_addresses" ]; then
+            echo ""
+            echo "❌ ERROR: After $max_retries attempts, the following ingresses still do not have addresses assigned:"
+            echo "$missing_addresses" | while read -r ingress; do
+              echo "  - $ingress"
+            done
+            echo ""
+            echo "💡 This usually means:"
+            echo "   • Ingress controller is not running"
+            echo "   • Load balancer provisioning failed"
+            echo "   • Ingress controller doesn't support LoadBalancer service type"
+            echo "   • Cloud provider integration issues"
+            echo "   • Tailscale ACL wrong"
+            exit 1
+          fi
+
+      - name: Cleanup Tailscale devices
+        if: always()
+        run: |
+          echo ""
+          echo "=== Running Tailscale cleanup ==="
+          
+          # Set variables for cleanup
+          TAILNET="${TAILNET_NAME}"
+          API_KEY="${{ secrets.TAILSCALE_API_KEY }}"
+          
+          # Validate required variables for cleanup
+          if [[ -z "$TAILNET" || -z "$API_KEY" || -z "$RANDOM_STRING" ]]; then
+            echo "Warning: Cannot run cleanup - missing TAILNET, API_KEY, or RANDOM_STRING"
+            echo "TAILNET: ${TAILNET:-'not set'}"
+            echo "API_KEY: ${API_KEY:+'set (hidden)'}"
+            echo "RANDOM_STRING: ${RANDOM_STRING:-'not set'}"
+            exit 0
+          fi
+          
+          echo "Searching for devices containing '$RANDOM_STRING' in tailnet '$TAILNET'..."
+          
+          # Get devices and process them
+          curl -s "https://api.tailscale.com/api/v2/tailnet/$TAILNET/devices" \
+            -u "$API_KEY:" \
+            -H "Accept: application/json" | \
+          jq -r '.devices[]? | select(.name != null) | "\(.id) \(.name)"' | \
+          while IFS=' ' read -r id name; do
+            # Skip empty lines
+            [[ -z "$id" || -z "$name" ]] && continue
+          
+            if [[ "$name" == *"$RANDOM_STRING"* ]]; then
+              echo "Found: '$name' (ID: $id) contains '$RANDOM_STRING' - removing it"
+          
+              # Delete the device
+              delete_response=$(curl -s -w "%{http_code}" -o /dev/null \
+                -X DELETE "https://api.tailscale.com/api/v2/device/$id" \
+                -u "$API_KEY:" \
+                -H "Accept: application/json")
+          
+              if [[ "$delete_response" == "200" ]]; then
+                echo "✓ Successfully deleted device '$name'"
+              else
+                echo "✗ Failed to delete device '$name' (HTTP $delete_response)"
+              fi
+            fi
+          done
+          
+          echo "Device cleanup complete."
+
+      - name: Sleep for 5 minutes
+        if: inputs.keep
+        run: sleep ${{inputs.duration || 300}}
+        shell: bash
+
+      - name: Debug failure
+        if: failure()
+        run: |
+          kubectl get --all-namespaces pods
+          echo "Redis Pod IPs"
+          kubectl get pods -l app.kubernetes.io/name=redis-cluster -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.phase}{"\t"}{range .status.podIPs[*]}{.ip}{" "}{end}{"\n"}{end}' -n fleetdm
+          echo "Describe not running pods"
+          kubectl get pods --all-namespaces --field-selector=status.phase!=Running --no-headers | awk '{print $1 " " $2}' | xargs -n 2 sh -c 'kubectl describe pod $1 -n $0'
+          kubectl -n flux-system get all
+          kubectl -n flux-system logs deploy/source-controller
+          kubectl -n flux-system logs deploy/kustomize-controller
+          kubectl -n flux-system logs deploy/helm-controller
+          flux get all --all-namespaces
+
+      - name: Cleanup Kind cluster
+        if: always()
+        run: |
+          echo "Cleaning up: Deleting flux-e2e cluster..."
+          if kind get clusters | grep -q "flux-e2e"; then
+            kind delete cluster --name flux-e2e
+            echo "✓ Cluster deleted"
+          else
+            echo "ℹ No flux-e2e cluster found to delete"
+          fi
+          
+          echo "=== Cleanup process completed ==="

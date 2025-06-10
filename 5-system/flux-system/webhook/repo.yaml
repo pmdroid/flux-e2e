@@ -1,0 +1,10 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: internal-tools
+  namespace: flux-system
+spec:
+  interval: 60m
+  url: https://github.com/placeholder-tech/internal-tools-infrastructure
+  ref:
+    branch: main

@@ -1,0 +1,35 @@
+{
+	"groups": {
+		"group:sre": ["pmdroid@github"]
+	},
+	"tagOwners": {
+		"tag:k8s-operator":     [],
+		"tag:k8s":              ["tag:k8s-operator"],
+		"tag:k8s-e2e-operator": [],
+		"tag:k8s-e2e":          ["tag:k8s-e2e-operator"],
+		"tag:webhook":          ["tag:k8s-operator", "tag:k8s-e2e-operator"],
+		"tag:fleetdm":          ["tag:k8s-operator", "tag:k8s-e2e-operator"]
+	},
+	"hosts": {
+		"e2e-network": "10.0.0.0/16"
+	},
+	"acls": [
+		{
+			"action": "accept",
+			"src":    ["*"],
+			"dst":    ["tag:webhook:*"]
+		},
+		{
+			"action": "accept",
+			"src":    ["*"],
+			"dst":    ["tag:fleetdm:*"]
+		}
+	],
+	"ssh": [],
+	"nodeAttrs": [
+		{
+			"target": ["tag:webhook", "tag:fleetdm"],
+			"attr":   ["funnel"]
+		}
+	]
+}

@@ -1,0 +1,10 @@
+apiVersion: source.toolkit.fluxcd.io/v1beta2
+kind: OCIRepository
+metadata:
+  name: redis
+  namespace: fleetdm
+spec:
+  interval: 1m10s
+  url: oci://registry-1.docker.io/bitnamicharts/redis-cluster
+  ref:
+    tag: 11.5.4

@@ -1,0 +1,46 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: server
+  namespace: fleetdm
+spec:
+  interval: 10m
+  timeout: 5m
+  values:
+    envsFrom:
+     - name: FLEET_DEV_ANDROID_SERVICE_CREDENTIALS
+       valueFrom:
+          secretKeyRef:
+            name: server
+            key: android_service_credentials
+     - name: FLEET_SERVER_PRIVATE_KEY
+       valueFrom:
+         secretKeyRef:
+           name: server
+           key: private_key
+    fleet:
+      tls:
+        enabled: false
+    database:
+      secretName: database
+      address: mysql.fleetdm.svc:3306
+      database: fleetdm
+      username: fleetdm
+      passwordKey: mysql-password
+      maxOpenConns: 50
+      maxIdleConns: 50
+      connMaxLifetime: 0
+      tls:
+        enabled: false
+    cache:
+      address: redis-redis-cluster-headless.fleetdm.svc:6379
+      database: "0"
+      usePassword: false
+  chart:
+    spec:
+      chart: fleet
+      version: v6.6.5
+      sourceRef:
+        kind: HelmRepository
+        name: fleetdm
+      interval: 5m

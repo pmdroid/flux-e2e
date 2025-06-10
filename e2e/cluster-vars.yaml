@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-vars
+  namespace: flux-system
+data:
+  tailscaleTag: "tag:k8s-e2e-operator"
+  tailscaleHostname: "tailscale-e2e-operator"
+  tailscalePrefixkind: "e2e-local-"
+  tailscaleNetName: "taile07e4.ts.net"

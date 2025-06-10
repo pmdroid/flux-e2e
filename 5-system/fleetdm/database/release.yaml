@@ -1,0 +1,16 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: mysql
+  namespace: fleetdm
+spec:
+  values:
+    auth:
+      database: fleetdm
+      username: fleetdm
+      existingSecret: database
+  releaseName: mysql
+  chartRef:
+    kind: OCIRepository
+    name: mysql
+  interval: 1m10s
