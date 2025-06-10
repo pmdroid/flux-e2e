@@ -3,3 +3,4 @@
 k8s.yaml
 manifest.json
 .idea
+.env
