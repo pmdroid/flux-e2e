@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-vars
+  namespace: flux-system
+data:
+  defaultStorageClassName: "standard"
+  tailscaleTag: "tag:k8s-e2e-operator"
+  tailscaleHostname: "tailscale-e2e-operator"
+  tailscalePrefix: "e2e-local-"
+  tailscaleNetName: "replaceme.ts.net"

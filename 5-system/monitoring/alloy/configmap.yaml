@@ -1,0 +1,89 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alloy
+  namespace: monitoring
+data:
+  config: |
+    logging {
+      level = "error"
+      format = "logfmt"
+    }
+
+    loki.write "default" {
+      endpoint {
+        url = "http://loki-gateway.monitoring.svc.cluster.local/loki/api/v1/push"
+      }
+    }
+
+    loki.process "local" {
+      forward_to = [loki.write.default.receiver]
+
+      stage.tenant {
+        value = "0"
+      }
+    
+     stage.static_labels {
+        values = {
+          cluster = "internal-tools",
+        }
+      }
+    }
+
+    discovery.kubernetes "pods" {
+      role = "pod"
+    }
+
+    loki.secretfilter "secret_filter" {
+        forward_to = [loki.process.local.receiver]
+        redact_with = "<ALLOY-REDACTED-SECRET:$SECRET_NAME>"
+    }
+
+    discovery.relabel "pods" {
+      targets    = discovery.kubernetes.pods.targets
+      rule {
+        source_labels = ["__meta_kubernetes_pod_label_app"]
+        target_label  = "app"
+      }
+
+      rule {
+        source_labels = ["__meta_kubernetes_pod_name"]
+        target_label  = "name"
+      }
+
+      rule {
+        source_labels = ["__meta_kubernetes_pod_container_name"]
+        target_label  = "container"
+      }
+
+      rule {
+        source_labels = ["__meta_kubernetes_namespace"]
+        target_label  = "namespace"
+      }
+
+      rule {
+        source_labels = ["__meta_kubernetes_pod_label_component"]
+        target_label  = "component"
+      }
+    }
+
+    loki.source.kubernetes "pods" {
+      targets    = discovery.relabel.pods.output
+      forward_to = [loki.secretfilter.secret_filter.receiver]
+      clustering {
+        enabled = true
+      }
+    }
+
+    loki.source.kubernetes_events "kubernetes_events" {
+      forward_to = [loki.process.local.receiver]
+    }
+    
+    loki.source.journal "journal" {
+      forward_to    = [loki.process.local.receiver]
+      path = "/var/log/journal"
+    
+      labels = {
+        hostname = env("HOSTNAME"),
+      } 
+    }

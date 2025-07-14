@@ -1,0 +1,17 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: echo-server
+  namespace: echo-server
+  annotations:
+    tailscale.com/tag: "echo-server"
+spec:
+  defaultBackend:
+    service:
+      name: echo-server
+      port:
+        name: http
+  ingressClassName: tailscale
+  tls:
+    - hosts:
+        - "${tailscalePrefix}echo-server"

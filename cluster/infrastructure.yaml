@@ -1,0 +1,36 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: infrastructure
+  namespace: flux-system
+spec:
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: cluster-vars
+  healthChecks:
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: sealed-secrets
+      namespace: kube-system
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: cert-manager
+      namespace: kube-system
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: operator
+      namespace: network-tools
+    - apiVersion: apps/v1
+      kind: StatefulSet
+      name: loki
+      namespace: monitoring
+  interval: 10m0s
+  path: ./4-infrastructure
+  prune: true
+  dependsOn:
+    - name: config
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  timeout: 5m0s

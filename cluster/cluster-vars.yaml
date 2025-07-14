@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-vars
+  namespace: flux-system
+data:
+  defaultStorageClassName: "hcloud-volumes"
+  tailscaleTag: "tag:k8s-operator"
+  tailscalePrefix: ""
+  tailscaleHostname: "tailscale-operator"
+  tailscaleNetName: "replaceme.ts.net"

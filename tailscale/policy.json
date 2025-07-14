@@ -1,0 +1,28 @@
+{
+	"groups": {
+		"group:sre": ["pmdroid@github"]
+	},
+	"tagOwners": {
+		"tag:k8s-operator":     [],
+		"tag:k8s-e2e-operator": [],
+		"tag:k8s":              ["tag:k8s-operator", "tag:k8s-e2e-operator"],
+		"tag:webhook":          ["tag:k8s-operator", "tag:k8s-e2e-operator"],
+		"tag:grafana":          ["tag:k8s-operator", "tag:k8s-e2e-operator"],
+		"tag:echo-server":      ["tag:k8s-operator", "tag:k8s-e2e-operator"]
+	},
+	"hosts": {
+		"example-network": "10.0.0.0/16"
+	},
+	"acls": [
+		{
+			"action": "accept",
+			"src":    ["*"],
+			"dst":    ["tag:grafana:*"]
+		},
+		{
+			"action": "accept",
+			"src":    ["*"],
+			"dst":    ["tag:echo-server:*"]
+		}
+	]
+}

@@ -1,0 +1,7 @@
+/bin/
+/node_modules/
+k8s.yaml
+manifest.json
+.idea
+.env
+.DS_Store
