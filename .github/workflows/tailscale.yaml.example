@@ -6,17 +6,20 @@ on:
   pull_request:
     branches: [ "main" ]
 
+permissions:
+  contents: read
+
 jobs:
   acls:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Deploy ACL
         if: github.event_name == 'push'
         id: deploy-acl
-        uses: tailscale/gitops-acl-action@v1
+        uses: tailscale/gitops-acl-action@5a4a17f5708e9bf96f4ee915a95e9f83c2eebe1a # v1
         with:
           api-key: ${{ secrets.TAILSCALE_API_KEY }}
           tailnet: ${{ secrets.TAILSCALE_TAILNET }}
@@ -26,7 +29,7 @@ jobs:
       - name: Test ACL
         if: github.event_name == 'pull_request'
         id: test-acl
-        uses: tailscale/gitops-acl-action@v1
+        uses: tailscale/gitops-acl-action@5a4a17f5708e9bf96f4ee915a95e9f83c2eebe1a # v1
         with:
           api-key: ${{ secrets.TAILSCALE_API_KEY }}
           tailnet: ${{ secrets.TAILSCALE_TAILNET }}
