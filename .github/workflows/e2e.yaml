@@ -11,8 +11,11 @@ on:
         type: string
       keep:
         description: 'Should keep the cluster running'
-        type: keep
+        type: boolean
         required: true
+
+permissions:
+  contents: read
 
 env:
   CONFIGMAP_NAME: "cluster-vars"
@@ -25,9 +28,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
+    env:
+      TAILSCALE_API_KEY: ${{ secrets.TAILSCALE_API_KEY }}
+      TAILSCALE_CLIENT_ID: ${{ secrets.TAILSCALE_CLIENT_ID }}
+      TAILSCALE_CLIENT_SECRET: ${{ secrets.TAILSCALE_CLIENT_SECRET }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
     steps:
       - name: Tailscale
-        uses: tailscale/github-action@v3
+        uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3
         if: inputs.keep
         with:
           oauth-client-id: ${{ secrets.CI_TAILSCALE_CLIENT_ID }}
@@ -39,19 +48,19 @@ jobs:
           set -euo pipefail
           echo "Validating required secrets..."
           MISSING_SECRETS=()
-          
-          if [ -z "${{ secrets.TAILSCALE_API_KEY }}" ]; then
+
+          if [ -z "$TAILSCALE_API_KEY" ]; then
             MISSING_SECRETS+=("TAILSCALE_API_KEY")
           fi
-          
-          if [ -z "${{ secrets.TAILSCALE_CLIENT_ID }}" ]; then
+
+          if [ -z "$TAILSCALE_CLIENT_ID" ]; then
             MISSING_SECRETS+=("TAILSCALE_CLIENT_ID")
           fi
-          
-          if [ -z "${{ secrets.TAILSCALE_CLIENT_SECRET }}" ]; then
+
+          if [ -z "$TAILSCALE_CLIENT_SECRET" ]; then
             MISSING_SECRETS+=("TAILSCALE_CLIENT_SECRET")
           fi
-          
+
           if [ ${#MISSING_SECRETS[@]} -ne 0 ]; then
             echo "❌ ERROR: The following required secrets are not set:"
             printf '  - %s\n' "${MISSING_SECRETS[@]}"
@@ -65,11 +74,11 @@ jobs:
             echo "  - TAILSCALE_CLIENT_SECRET: Operator OAuth client secret"
             exit 1
           fi
-          
+
           echo "✅ All required secrets are properly configured"
 
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
@@ -89,23 +98,18 @@ jobs:
 
       - name: Patch Config
         if: inputs.keep
+        env:
+          API_IP: ${{ steps.ip.outputs.ip }}
         run: |
-          sed -i "s/apiServerAddress: \"127.0.0.1\"/apiServerAddress: \"${{ steps.ip.outputs.ip }}\"/" kind-config.yaml
+          sed -i "s/apiServerAddress: \"127.0.0.1\"/apiServerAddress: \"${API_IP}\"/" kind-config.yaml
           cat kind-config.yaml
 
       - name: Setup Kind
-        uses: helm/kind-action@v1.10.0
+        uses: helm/kind-action@0025e74a8c7512023d06dc019c617aa3cf561fde # v1.10.0
         with:
           cluster_name: flux-e2e
           config: kind-config.yaml
           wait: 30s
-
-      - name: Debug Config
-        if: inputs.keep
-        run: |
-          wget https://github.com/Luzifer/ots/releases/download/v1.17.1/ots-cli_linux_amd64.tgz
-          tar -xvf ots-cli_linux_amd64.tgz
-          cat ~/.kube/config | ./ots-cli create
 
       - name: Setup kubectl
         run: |
@@ -116,12 +120,12 @@ jobs:
       - name: Install Helm and Cillium
         run: |
           echo "Setting up Helm..."
-          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-          
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | DESIRED_VERSION=v3.21.4 bash
+
           echo "Installing Cillium"
           APISERVER_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' flux-e2e-control-plane)
           echo "API Server IP: $APISERVER_IP"
-          
+
           helm repo add cilium https://helm.cilium.io/
           docker pull quay.io/cilium/cilium:v1.17.4
           kind load docker-image quay.io/cilium/cilium:v1.17.4 --name flux-e2e
@@ -146,7 +150,7 @@ jobs:
 
       - name: Install Flux CLI
         run: |
-          curl -s https://fluxcd.io/install.sh | sudo bash
+          curl -fsSL https://fluxcd.io/install.sh | sudo FLUX_VERSION=v2.9.5 bash
           flux --version
 
       - name: Create Kubernetes namespaces
@@ -167,8 +171,8 @@ jobs:
             namespace: network-tools
           type: Opaque
           stringData:
-            client_id: "${{ secrets.TAILSCALE_CLIENT_ID }}"
-            client_secret: "${{ secrets.TAILSCALE_CLIENT_SECRET }}"
+            client_id: "${TAILSCALE_CLIENT_ID}"
+            client_secret: "${TAILSCALE_CLIENT_SECRET}"
           EOF
 
       - name: Install and configure Flux
@@ -185,21 +189,18 @@ jobs:
 
       - name: Patch ConfigMap with random string
         run: |
-          # Patch the ConfigMap with tailscalePrefix
           kubectl patch configmap "$CONFIGMAP_NAME" -n "$NAMESPACE" \
             --type merge \
             -p "{\"data\":{\"tailscalePrefix\":\"$RANDOM_STRING-\"}}"
-          
-          # Patch the ConfigMap with tailscaleHostname
+
           kubectl patch configmap "$CONFIGMAP_NAME" -n "$NAMESPACE" \
             --type merge \
             -p "{\"data\":{\"tailscaleHostname\":\"$RANDOM_STRING-operator\"}}"
-          
+
           echo "Successfully patched ConfigMap '$CONFIGMAP_NAME' in namespace '$NAMESPACE'"
           echo "Added tailscalePrefix: $RANDOM_STRING-"
           echo "Added tailscaleHostname: $RANDOM_STRING-operator"
-          
-          # Verify the changes
+
           echo "Verifying the patch:"
           kubectl get configmap "$CONFIGMAP_NAME" -n "$NAMESPACE" -o jsonpath="{.data.tailscalePrefix}"
           echo ""
@@ -207,16 +208,19 @@ jobs:
           echo ""
 
       - name: Create Flux source
+        env:
+          REPO_URL: ${{ github.event.repository.html_url }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref || github.ref_name }}
         run: |
           echo "Creating Flux source..."
-          echo "Using repository: ${{ github.event.repository.html_url }}"
-          echo "Using branch: ${{ github.ref_name }}"
-          
+          echo "Using repository: $REPO_URL"
+          echo "Using branch: $HEAD_REF"
+
           flux create source git flux-system \
-            --url="${{ github.event.repository.html_url }}" \
-            --branch="${{github.event.pull_request.head.ref}}" \
-            --username=${GITHUB_ACTOR} \
-            --password=${{ secrets.GITHUB_TOKEN }} \
+            --url="$REPO_URL" \
+            --branch="$HEAD_REF" \
+            --username="${GITHUB_ACTOR}" \
+            --password="$GH_TOKEN" \
             --ignore-paths="cluster/flux-system/" \
             --ignore-paths="cluster/config.yaml" \
             --ignore-paths="cluster/secrets.yaml" \
@@ -248,24 +252,21 @@ jobs:
           echo "Kubernetes Ingresses Table"
           echo "=========================="
           echo ""
-          
-          # Show current ingresses table - fix the custom-columns format
+
           kubectl get ingress --all-namespaces -o custom-columns="NAMESPACE:.metadata.namespace,NAME:.metadata.name,CLASS:.spec.ingressClassName,ADDRESS:.status.loadBalancer.ingress[0].hostname,AGE:.metadata.creationTimestamp"
-          
+
           echo ""
           echo "Checking for ingresses without addresses..."
           echo "==========================================="
-          
-          # Retry loop for checking ingress addresses
+
           max_retries=5
           retry_interval=30
           retry_count=0
-          
+
           while [ $retry_count -lt $max_retries ]; do
             retry_count=$((retry_count + 1))
             echo "Attempt $retry_count of $max_retries..."
-          
-            # Check for ingresses without addresses
+
             missing_addresses=$(kubectl get ingress --all-namespaces -o json | jq -r '
               .items[] |
               select(
@@ -274,7 +275,7 @@ jobs:
               ) |
               .metadata.namespace + "/" + .metadata.name
             ')
-          
+
             if [ -z "$missing_addresses" ]; then
               echo "✅ All ingresses have addresses assigned!"
               break
@@ -283,20 +284,18 @@ jobs:
               echo "$missing_addresses" | while read -r ingress; do
                 echo "  - $ingress"
               done
-          
+
               if [ $retry_count -lt $max_retries ]; then
                 echo "⏳ Waiting ${retry_interval} seconds before retry..."
                 sleep $retry_interval
                 echo ""
                 echo "Refreshing ingresses table..."
-                # Fix the refresh command too
                 kubectl get ingress --all-namespaces -o custom-columns="NAMESPACE:.metadata.namespace,NAME:.metadata.name,CLASS:.spec.ingressClassName,ADDRESS:.status.loadBalancer.ingress[0].hostname,AGE:.metadata.creationTimestamp"
                 echo ""
               fi
             fi
           done
-          
-          # If we get here and still have missing addresses, show error
+
           if [ -n "$missing_addresses" ]; then
             echo ""
             echo "❌ ERROR: After $max_retries attempts, the following ingresses still do not have addresses assigned:"
@@ -318,40 +317,34 @@ jobs:
         run: |
           echo ""
           echo "=== Running Tailscale cleanup ==="
-          
-          # Set variables for cleanup
+
           TAILNET="${TAILNET_NAME}"
-          API_KEY="${{ secrets.TAILSCALE_API_KEY }}"
-          
-          # Validate required variables for cleanup
-          if [[ -z "$TAILNET" || -z "$API_KEY" || -z "$RANDOM_STRING" ]]; then
+
+          if [[ -z "$TAILNET" || -z "$TAILSCALE_API_KEY" || -z "$RANDOM_STRING" ]]; then
             echo "Warning: Cannot run cleanup - missing TAILNET, API_KEY, or RANDOM_STRING"
             echo "TAILNET: ${TAILNET:-'not set'}"
-            echo "API_KEY: ${API_KEY:+'set (hidden)'}"
+            echo "API_KEY: ${TAILSCALE_API_KEY:+'set (hidden)'}"
             echo "RANDOM_STRING: ${RANDOM_STRING:-'not set'}"
             exit 0
           fi
-          
+
           echo "Searching for devices containing '$RANDOM_STRING' in tailnet '$TAILNET'..."
-          
-          # Get devices and process them
+
           curl -s "https://api.tailscale.com/api/v2/tailnet/$TAILNET/devices" \
-            -u "$API_KEY:" \
+            -u "$TAILSCALE_API_KEY:" \
             -H "Accept: application/json" | \
           jq -r '.devices[]? | select(.name != null) | "\(.id) \(.name)"' | \
           while IFS=' ' read -r id name; do
-            # Skip empty lines
             [[ -z "$id" || -z "$name" ]] && continue
-          
+
             if [[ "$name" == *"$RANDOM_STRING"* ]]; then
               echo "Found: '$name' (ID: $id) contains '$RANDOM_STRING' - removing it"
-          
-              # Delete the device
+
               delete_response=$(curl -s -w "%{http_code}" -o /dev/null \
                 -X DELETE "https://api.tailscale.com/api/v2/device/$id" \
-                -u "$API_KEY:" \
+                -u "$TAILSCALE_API_KEY:" \
                 -H "Accept: application/json")
-          
+
               if [[ "$delete_response" == "200" ]]; then
                 echo "✓ Successfully deleted device '$name'"
               else
@@ -359,12 +352,14 @@ jobs:
               fi
             fi
           done
-          
+
           echo "Device cleanup complete."
 
       - name: Sleep for 5 minutes
         if: inputs.keep
-        run: sleep ${{inputs.duration || 300}}
+        env:
+          SLEEP_SECONDS: ${{ inputs.duration || 300 }}
+        run: sleep "$SLEEP_SECONDS"
         shell: bash
 
       - name: Debug failure
@@ -391,5 +386,5 @@ jobs:
           else
             echo "ℹ No flux-e2e cluster found to delete"
           fi
-          
+
           echo "=== Cleanup process completed ==="
